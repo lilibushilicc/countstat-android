@@ -68,6 +68,7 @@ public class MainActivity extends Activity {
     private String activePage = "home";
     private String statsPeriod = "week";
     private String trendMode = "bar"; // bar | line
+    private Record editingRecord;
 
     // 录入页控件
     private EditText dateInput;
@@ -89,7 +90,8 @@ public class MainActivity extends Activity {
     private final List<ConfigRow> configRows = new ArrayList<>();
     private LinearLayout configListContainer;
 
-    private final DecimalFormat moneyFormat = new DecimalFormat("0.00");
+    private final DecimalFormat moneyFormat = new DecimalFormat("0.000");
+    private final DecimalFormat priceFormat = new DecimalFormat("0.000");
     private final SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA);
 
     /** 录入页一行机器输入。 */
@@ -206,6 +208,8 @@ public class MainActivity extends Activity {
             buildStats(body);
         } else if ("settings".equals(page)) {
             buildSettings(body);
+        } else if ("detail".equals(page)) {
+            buildDetail(body);
         } else {
             buildMachineConfig(body);
         }
@@ -228,7 +232,7 @@ public class MainActivity extends Activity {
 
         LinearLayout hero = card();
         hero.addView(label("今日预览", accent2, 12, true));
-        previewIncome = title("¥0.00", 30);
+        previewIncome = title("¥0.000", 30);
         hero.addView(previewIncome);
         hero.addView(text("根据各机器数量与单价实时计算", muted, 13));
 
@@ -256,7 +260,7 @@ public class MainActivity extends Activity {
             form.addView(empty("请先点击右上角“配置”添加机器名称和单价。"));
         } else {
             for (MachineConfig machine : configs) {
-                addMachineRow(machine.name, "", moneyFormat.format(machine.unitPrice));
+                addMachineRow(machine.name, "", priceFormat.format(machine.unitPrice));
             }
         }
 
@@ -299,7 +303,7 @@ public class MainActivity extends Activity {
         row.name.setPadding(0, 0, 0, 0);
         topBar.addView(row.name, new LinearLayout.LayoutParams(0, dp(44), 1));
 
-        row.total = label("¥0.00", success, 17, true);
+        row.total = label("¥0.000", success, 17, true);
         row.total.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
         topBar.addView(row.total, new LinearLayout.LayoutParams(-2, dp(44)));
         rowView.addView(topBar);
@@ -355,11 +359,11 @@ public class MainActivity extends Activity {
         machineListContainer.removeAllViews();
         if (record.machines.isEmpty()) {
             for (MachineConfig machine : loadMachineConfigs()) {
-                addMachineRow(machine.name, "", moneyFormat.format(machine.unitPrice));
+                addMachineRow(machine.name, "", priceFormat.format(machine.unitPrice));
             }
         } else {
             for (Record.Machine m : record.machines) {
-                addMachineRow(m.name, String.valueOf(m.quantity), moneyFormat.format(m.unitPrice));
+                addMachineRow(m.name, String.valueOf(m.quantity), priceFormat.format(m.unitPrice));
             }
         }
         updatePreview();
@@ -370,7 +374,7 @@ public class MainActivity extends Activity {
         machineRows.clear();
         machineListContainer.removeAllViews();
         for (MachineConfig machine : loadMachineConfigs()) {
-            addMachineRow(machine.name, "", moneyFormat.format(machine.unitPrice));
+            addMachineRow(machine.name, "", priceFormat.format(machine.unitPrice));
         }
         updatePreview();
         toast("已清空录入内容");
@@ -830,6 +834,130 @@ public class MainActivity extends Activity {
         body.addView(restore);
     }
 
+    // ================= 详情查看与修改 =================
+
+    private void buildDetail(LinearLayout body) {
+        if (editingRecord == null) {
+            showPage("history");
+            return;
+        }
+
+        // 返回按钮 + 标题
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        Button back = secondaryButton("← 返回");
+        back.setOnClickListener(v -> showPage("history"));
+        top.addView(back);
+        LinearLayout.LayoutParams headerParams = new LinearLayout.LayoutParams(0, -2, 1);
+        headerParams.setMargins(dp(12), 0, 0, 0);
+        top.addView(header("记录详情", editingRecord.date, "查看并修改各机器数量"), headerParams);
+        body.addView(top);
+
+        // 日期（可改）
+        EditText dateField = input(editingRecord.date, 0x00000000);
+        attachDatePicker(dateField);
+        body.addView(field("日期", dateField));
+
+        // 汇总卡片
+        LinearLayout hero = card();
+        hero.addView(label("总收入", accent2, 12, true));
+        TextView detailIncome = title(money(editingRecord.income()), 30);
+        hero.addView(detailIncome);
+        hero.addView(text(editingRecord.total() + " 件 · " + editingRecord.machines.size() + " 台机器", muted, 13));
+        body.addView(hero);
+
+        // 各机器数量编辑
+        body.addView(label("各机器数量", ink, 15, true));
+
+        List<DetailRow> detailRows = new ArrayList<>();
+        for (Record.Machine m : editingRecord.machines) {
+            LinearLayout rowCard = card();
+            LinearLayout rowTop = new LinearLayout(this);
+            rowTop.setOrientation(LinearLayout.HORIZONTAL);
+            rowTop.setGravity(Gravity.CENTER_VERTICAL);
+            TextView nameLabel = label(m.name, ink, 15, true);
+            rowTop.addView(nameLabel, new LinearLayout.LayoutParams(0, -2, 1));
+            TextView rowTotal = label(money(m.quantity * m.unitPrice), success, 17, true);
+            rowTop.addView(rowTotal);
+            rowCard.addView(rowTop);
+
+            EditText qtyInput = input(String.valueOf(m.quantity), 0x00002002); // TYPE_CLASS_NUMBER | TYPE_NUMBER_FLAG_DECIMAL
+            qtyInput.addTextChangedListener(new android.text.TextWatcher() {
+                @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+                @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+                @Override
+                public void afterTextChanged(android.text.Editable s) {
+                    double q = number(s.toString());
+                    rowTotal.setText(money(q * m.unitPrice));
+                    // 重新计算总收入
+                    double totalIncome = 0;
+                    for (DetailRow dr : detailRows) {
+                        double qq = number(dr.qty.getText().toString());
+                        totalIncome += qq * dr.unitPrice;
+                    }
+                    detailIncome.setText(money(totalIncome));
+                }
+            });
+            rowCard.addView(field("数量", qtyInput));
+
+            DetailRow dr = new DetailRow();
+            dr.name = m.name;
+            dr.unitPrice = m.unitPrice;
+            dr.qty = qtyInput;
+            detailRows.add(dr);
+
+            body.addView(rowCard);
+        }
+
+        // 保存按钮
+        Button saveBtn = primaryButton("保存修改");
+        saveBtn.setOnClickListener(v -> {
+            String newDate = dateField.getText().toString().trim();
+            if (newDate.isEmpty()) {
+                toast("请填写日期");
+                return;
+            }
+            List<Record.Machine> machines = new ArrayList<>();
+            for (DetailRow dr : detailRows) {
+                int q = (int) number(dr.qty.getText().toString());
+                if (q > 0) {
+                    Record.Machine m = new Record.Machine();
+                    m.name = dr.name;
+                    m.quantity = q;
+                    m.unitPrice = dr.unitPrice;
+                    machines.add(m);
+                }
+            }
+            if (machines.isEmpty()) {
+                toast("至少输入一台机器的数量");
+                return;
+            }
+            Record updated = new Record();
+            updated.date = newDate;
+            updated.machines.addAll(machines);
+            updated.updatedAt = System.currentTimeMillis();
+            // 如果日期变了，先删旧的
+            if (!newDate.equals(editingRecord.date)) {
+                dbHelper.delete(editingRecord.date);
+            }
+            dbHelper.upsert(updated);
+            syncManager.scheduleUpload();
+            toast("已保存修改");
+            editingRecord = updated;
+            showPage("history");
+        });
+        LinearLayout.LayoutParams saveParams = fullParams(dp(52));
+        saveParams.setMargins(0, dp(16), 0, 0);
+        body.addView(saveBtn, saveParams);
+    }
+
+    private static class DetailRow {
+        String name;
+        double unitPrice;
+        EditText qty;
+    }
+
     // ================= 记录列表与数据辅助 =================
 
     private LinearLayout recordList(List<Record> records, boolean editable) {
@@ -841,6 +969,10 @@ public class MainActivity extends Activity {
         }
         for (Record record : records) {
             LinearLayout item = card();
+            item.setOnClickListener(v -> {
+                editingRecord = record;
+                showPage("detail");
+            });
             item.addView(label(record.date, ink, 16, true));
             TextView summary = text(record.total() + " 件 · 收入 " + money(record.income()), success, 14);
             summary.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
