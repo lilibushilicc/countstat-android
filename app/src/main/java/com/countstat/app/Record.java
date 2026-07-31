@@ -15,9 +15,12 @@ public class Record {
 
     /** 单台机器：名称、数量、单价。 */
     public static class Machine {
+        /** 未配置单价时的默认值。 */
+        public static final double DEFAULT_PRICE = 0.35;
+
         public String name = "";
         public int quantity = 0;
-        public double unitPrice = 0.35;
+        public double unitPrice = DEFAULT_PRICE;
 
         public int total() {
             return quantity;

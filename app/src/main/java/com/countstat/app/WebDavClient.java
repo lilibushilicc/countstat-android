@@ -10,7 +10,6 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -22,6 +21,9 @@ import javax.net.ssl.HttpsURLConnection;
  * 支持上传(PUT)、下载(GET)、测试连接(PROPFIND)和列目录。
  */
 public class WebDavClient {
+
+    /** 是否信任任意 TLS 证书。原型阶段默认 true；生产部署应改为 false。 */
+    public static final boolean TRUST_ALL_TLS = true;
 
     private String url;
     private String user;
@@ -64,19 +66,16 @@ public class WebDavClient {
     private void applyAuth(HttpURLConnection conn) {
         if (user.isEmpty() && password.isEmpty()) return;
         String auth = user + ":" + password;
-        String encoded;
-        try {
-            encoded = Base64.getEncoder().encodeToString(auth.getBytes(StandardCharsets.UTF_8));
-        } catch (Exception e) {
-            encoded = android.util.Base64.encodeToString(auth.getBytes(), android.util.Base64.NO_WRAP);
-        }
+        // java.util.Base64 需要 API 26+，而 minSdk 为 24，必须用 android.util.Base64
+        String encoded = android.util.Base64.encodeToString(auth.getBytes(StandardCharsets.UTF_8),
+                android.util.Base64.NO_WRAP);
         conn.setRequestProperty("Authorization", "Basic " + encoded);
     }
 
     private HttpURLConnection open(String fullUrl, String method) throws Exception {
         HttpURLConnection conn = (HttpURLConnection) new URL(fullUrl).openConnection();
-        if (conn instanceof HttpsURLConnection) {
-            // 允许自签名证书的简易信任；原型阶段不强制校验
+        if (TRUST_ALL_TLS && conn instanceof HttpsURLConnection) {
+            // 允许自签名证书的简易信任；可通过 TRUST_ALL_TLS 关闭
             HttpsURLConnection https = (HttpsURLConnection) conn;
             try {
                 javax.net.ssl.SSLContext ctx = javax.net.ssl.SSLContext.getInstance("TLS");
@@ -173,6 +172,27 @@ public class WebDavClient {
                 while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
             }
             return true;
+        } catch (Exception e) {
+            return false;
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    /** 上传一段文本内容（JSON 导出、最新备份清单等）。成功返回 true。 */
+    public boolean uploadText(String content, String remoteName) {
+        if (!isConfigured()) return false;
+        ensureDir();
+        HttpURLConnection conn = null;
+        try {
+            conn = open(remoteUrl(remoteName), "PUT");
+            conn.setDoOutput(true);
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            try (OutputStream out = conn.getOutputStream()) {
+                out.write(content.getBytes(StandardCharsets.UTF_8));
+            }
+            int code = conn.getResponseCode();
+            return code >= 200 && code < 300;
         } catch (Exception e) {
             return false;
         } finally {

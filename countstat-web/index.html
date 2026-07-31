@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>CountStat · 计件产量看板</title>
+<style>
+:root{
+  --bg:#070c16;
+  --surface:#0f1a2e;
+  --surface2:#14213a;
+  --line:#1e2c4a;
+  --line2:#24365c;
+  --ink:#f2f6fc;
+  --muted:#93a5c4;
+  --faint:#5b6c8f;
+  --accent:#3b82f6;
+  --sky:#38bdf8;
+  --green:#10b981;
+  --red:#ef4444;
+  --amber:#f59e0b;
+  --radius:14px;
+  --font:"HarmonyOS Sans SC","MiSans","PingFang SC","Microsoft YaHei",sans-serif;
+  --mono:"JetBrains Mono","Cascadia Code","SF Mono",Consolas,"DIN Alternate",monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--ink);font-family:var(--font);min-height:100vh;overflow-x:hidden}
+::selection{background:rgba(59,130,246,.35)}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:#1e2c4a;border-radius:8px;border:2px solid var(--bg)}
+::-webkit-scrollbar-track{background:transparent}
+
+.grid-bg{
+  position:fixed;inset:0;z-index:-2;pointer-events:none;
+  background-image:
+    linear-gradient(rgba(30,44,74,.18) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(30,44,74,.18) 1px,transparent 1px);
+  background-size:44px 44px;
+  -webkit-mask-image:radial-gradient(ellipse 95% 75% at 50% 0%,#000 35%,transparent 100%);
+  mask-image:radial-gradient(ellipse 95% 75% at 50% 0%,#000 35%,transparent 100%);
+}
+.glow{
+  position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background:
+    radial-gradient(640px 360px at 10% -10%,rgba(59,130,246,.16),transparent 70%),
+    radial-gradient(560px 320px at 94% 2%,rgba(56,189,248,.10),transparent 70%),
+    radial-gradient(900px 620px at 50% 120%,rgba(16,185,129,.05),transparent 70%);
+}
+.grain{
+  position:fixed;inset:0;z-index:10;pointer-events:none;opacity:.05;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+.wrap{max-width:1080px;margin:0 auto;padding:34px 20px 60px}
+main{display:grid;gap:18px;min-width:0}
+main > *{min-width:0}
+header{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;flex-wrap:wrap;margin-bottom:26px}
+.brand{display:flex;align-items:center;gap:14px}
+.brand-mark{
+  width:44px;height:44px;border-radius:12px;position:relative;flex:none;
+  background:linear-gradient(145deg,#16325e,#0d1b33);
+  border:1px solid #24406e;
+  box-shadow:0 0 0 1px rgba(59,130,246,.08),0 8px 24px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.06);
+}
+.brand-mark::before{content:"";position:absolute;left:9px;top:10px;width:12px;height:12px;border-radius:50%;background:var(--sky);box-shadow:0 0 12px var(--sky),0 0 26px rgba(56,189,248,.5)}
+.brand-mark::after{content:"";position:absolute;left:26px;top:22px;width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 10px rgba(16,185,129,.6)}
+.brand-name{font-size:22px;font-weight:800;letter-spacing:.02em;line-height:1.15}
+.brand-name span{color:var(--sky)}
+.brand-sub{font-family:var(--mono);font-size:11px;letter-spacing:.34em;color:var(--faint);text-transform:uppercase;margin-top:3px}
+.sys-info{text-align:right;font-family:var(--mono);font-size:12px;color:var(--muted);line-height:1.9}
+.sys-info b{color:var(--ink);font-weight:600}
+.sys-info .fname{display:block;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.live{display:inline-flex;align-items:center;gap:7px;color:var(--green);font-weight:700;letter-spacing:.12em;font-size:12px}
+.live-dot{width:8px;height:8px;border-radius:50%;background:var(--green);position:relative;flex:none}
+.live-dot::after{content:"";position:absolute;inset:-4px;border-radius:50%;border:1px solid var(--green);animation:pulse 1.8s ease-out infinite}
+@keyframes pulse{0%{transform:scale(.5);opacity:.9}70%,100%{transform:scale(1.5);opacity:0}}
+.refresh-row{display:flex;align-items:center;gap:8px;margin-top:4px;justify-content:flex-end;font-size:11px;color:var(--faint)}
+.refresh-track{width:96px;height:3px;border-radius:2px;background:#16223c;overflow:hidden}
+.refresh-fill{display:block;height:100%;width:0%;background:linear-gradient(90deg,var(--accent),var(--sky));border-radius:2px;transition:width .4s linear}
+
+.card{
+  position:relative;
+  background:linear-gradient(180deg,rgba(20,33,58,.55),rgba(15,26,46,.85));
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  padding:20px;
+  box-shadow:0 14px 40px rgba(0,0,0,.28),inset 0 1px 0 rgba(255,255,255,.03);
+}
+.card::before{
+  content:"";position:absolute;top:-1px;left:20px;width:44px;height:2px;
+  background:linear-gradient(90deg,var(--sky),transparent);
+  border-radius:2px;
+}
+.eyebrow{
+  font-family:var(--mono);font-size:10px;letter-spacing:.32em;color:var(--faint);
+  text-transform:uppercase;margin-bottom:6px;display:flex;align-items:center;gap:8px;
+}
+.eyebrow::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,var(--line),transparent)}
+.card-title{font-size:16px;font-weight:700;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+
+.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
+.metric{
+  position:relative;overflow:hidden;border-radius:var(--radius);min-width:0;
+  background:linear-gradient(180deg,rgba(21,35,61,.6),rgba(13,22,40,.9));
+  border:1px solid var(--line);padding:16px 18px;
+  transition:transform .25s,border-color .25s;
+}
+.metric:hover{transform:translateY(-3px);border-color:var(--line2)}
+.metric .m-label{font-size:11px;color:var(--muted);letter-spacing:.08em}
+.metric .m-value{
+  font-family:var(--mono);font-size:26px;font-weight:700;margin-top:8px;
+  font-variant-numeric:tabular-nums;letter-spacing:-.02em;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;
+}
+.metric .m-value small{font-size:14px;font-weight:600;color:var(--faint)}
+.metric .m-acc{position:absolute;right:-22px;bottom:-22px;width:74px;height:74px;border-radius:50%;opacity:.14;filter:blur(2px)}
+.metric.income .m-value{color:var(--green)}
+.metric.income .m-acc{background:var(--green)}
+.metric.pieces .m-value{color:var(--sky)}
+.metric.pieces .m-acc{background:var(--sky)}
+.metric.machines .m-value{color:var(--amber)}
+.metric.machines .m-acc{background:var(--amber)}
+.metric.days .m-value{color:var(--accent)}
+.metric.days .m-acc{background:var(--accent)}
+
+.controls{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}
+.seg{
+  display:inline-flex;gap:2px;padding:3px;border-radius:11px;
+  background:rgba(13,22,40,.8);border:1px solid var(--line);
+}
+.seg button{
+  border:0;background:transparent;color:var(--muted);font-size:13px;font-weight:600;
+  padding:8px 18px;border-radius:8px;cursor:pointer;transition:all .2s;
+}
+.seg button:hover{color:var(--ink)}
+.seg button.on{
+  background:linear-gradient(180deg,#24488c,#1b3a74);color:#fff;
+  box-shadow:0 3px 12px rgba(59,130,246,.35),inset 0 1px 0 rgba(255,255,255,.15);
+}
+.charts{display:grid;grid-template-columns:1.65fr 1fr;gap:18px}
+@media(max-width:860px){.charts{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
+canvas#trend{width:100%;height:260px;display:block;cursor:crosshair}
+
+.dist-list{display:grid;gap:14px}
+.dist-item .d-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:7px;gap:10px}
+.dist-item .d-name{font-size:13px;font-weight:600;color:var(--ink)}
+.dist-item .d-name em{font-style:normal;color:var(--faint);font-size:11px;margin-left:6px}
+.dist-item .d-num{font-family:var(--mono);font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.dist-item .d-num b{color:var(--sky);font-size:14px}
+.d-track{height:10px;border-radius:6px;background:#0c1526;border:1px solid var(--line);overflow:hidden}
+.d-fill{
+  height:100%;width:0;border-radius:6px;transform-origin:left;
+  background:linear-gradient(90deg,#1d4ed8,var(--sky));
+  box-shadow:0 0 12px rgba(56,189,248,.4);
+  animation:grow 1s cubic-bezier(.22,.8,.36,1) forwards;
+}
+@keyframes grow{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+.d-track.r0 .d-fill{background:linear-gradient(90deg,#7c3aed,var(--accent))}
+.d-track.r1 .d-fill{background:linear-gradient(90deg,#0e7490,var(--sky))}
+.d-track.r2 .d-fill{background:linear-gradient(90deg,#047857,var(--green))}
+.d-track.r3 .d-fill{background:linear-gradient(90deg,#b45309,var(--amber))}
+.d-track.r4 .d-fill{background:linear-gradient(90deg,#9f1239,var(--red))}
+
+.filters{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.search{
+  flex:1;min-width:200px;display:flex;align-items:center;gap:8px;
+  background:rgba(13,22,40,.8);border:1px solid var(--line);border-radius:10px;
+  padding:9px 14px;transition:border-color .2s;
+}
+.search:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px rgba(59,130,246,.15)}
+.search svg{flex:none;opacity:.5}
+.search input{
+  flex:1;background:transparent;border:0;outline:0;color:var(--ink);font-size:13px;font-family:var(--font);
+}
+.search input::placeholder{color:var(--faint)}
+.date-range{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--faint)}
+.date-range input{
+  background:rgba(13,22,40,.8);border:1px solid var(--line);border-radius:8px;
+  color:var(--ink);font-size:12px;font-family:var(--mono);padding:7px 10px;outline:0;color-scheme:dark;
+}
+.table{width:100%;border-collapse:collapse}
+.table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.table thead th{
+  text-align:left;font-family:var(--mono);font-size:10px;letter-spacing:.22em;color:var(--faint);
+  font-weight:600;padding:0 12px 10px;border-bottom:1px solid var(--line);text-transform:uppercase;
+}
+.table thead th:last-child{text-align:right}
+.table tbody td{padding:12px;border-bottom:1px solid rgba(30,44,74,.55);vertical-align:middle}
+.table tbody tr{transition:background .15s;cursor:pointer}
+.table tbody tr:hover{background:rgba(59,130,246,.06)}
+.table tbody tr:last-child td{border-bottom:0}
+.td-date{font-family:var(--mono);font-size:14px;font-weight:700;color:var(--ink);white-space:nowrap}
+.td-date small{display:block;font-size:10px;color:var(--faint);font-weight:500;letter-spacing:.08em}
+.td-pieces{font-family:var(--mono);font-size:13px;color:var(--sky);font-variant-numeric:tabular-nums;white-space:nowrap}
+.td-income{font-family:var(--mono);font-size:14px;font-weight:700;color:var(--green);font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{
+  font-size:11px;color:var(--muted);background:#0c1526;border:1px solid var(--line);
+  padding:3px 9px;border-radius:999px;font-family:var(--mono);font-variant-numeric:tabular-nums;
+  white-space:nowrap;
+}
+.chip b{color:var(--ink)}
+.chip i{font-style:normal;color:var(--faint)}
+.detail-row td{background:rgba(9,15,28,.6);padding:14px 12px 16px}
+.detail-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px}
+.detail-cell{
+  background:#0d1830;border:1px solid var(--line);border-radius:10px;padding:10px 12px;
+}
+.detail-cell .n{font-size:12px;font-weight:600;color:var(--ink)}
+.detail-cell .s{display:flex;justify-content:space-between;margin-top:6px;font-family:var(--mono);font-size:11px;color:var(--faint)}
+.detail-cell .s b{color:var(--sky)}
+.detail-cell .s i{font-style:normal;color:var(--green)}
+.arrow{display:inline-block;transition:transform .25s;color:var(--faint);font-size:11px;margin-left:6px}
+tr.open .arrow{transform:rotate(180deg)}
+
+.empty{
+  text-align:center;padding:46px 20px;color:var(--faint);font-size:13px;line-height:2;
+}
+.empty .big{font-size:34px;margin-bottom:10px;opacity:.6}
+.empty b{color:var(--muted)}
+.empty code{
+  font-family:var(--mono);font-size:11px;background:#0c1526;border:1px solid var(--line);
+  padding:2px 8px;border-radius:6px;color:var(--sky);
+}
+footer{
+  margin-top:34px;text-align:center;font-size:11px;color:var(--faint);line-height:2;
+  font-family:var(--mono);letter-spacing:.06em;
+}
+footer .dot{color:var(--line2)}
+.reveal{opacity:0;transform:translateY(14px);animation:rise .6s cubic-bezier(.22,.8,.36,1) forwards}
+@keyframes rise{to{opacity:1;transform:none}}
+.d1{animation-delay:.05s}.d2{animation-delay:.12s}.d3{animation-delay:.19s}
+.d4{animation-delay:.26s}.d5{animation-delay:.33s}.d6{animation-delay:.40s}
+@media(max-width:560px){
+  .metric .m-value{font-size:20px}
+  .brand-name{font-size:19px}
+  .sys-info{text-align:left;width:100%}
+  .td-pieces,.td-income{font-size:12px}
+}
+</style>
+
+</head>
+<body>
+<div class="grid-bg"></div>
+<div class="glow"></div>
+<div class="grain"></div>
+
+<div class="wrap">
+  <header class="reveal">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div>
+        <div class="brand-name">Count<span>Stat</span></div>
+        <div class="brand-sub">Piecework Production Board</div>
+      </div>
+    </div>
+    <div class="sys-info">
+      <div><span class="live"><span class="live-dot"></span>LIVE SYNC</span></div>
+      <div>最新备份 <b id="backupName">—</b></div>
+      <div class="fname">数据文件 <span id="exportName">countstat-export.json</span></div>
+      <div class="refresh-row">
+        <span id="refreshText">60s 后自动刷新</span>
+        <span class="refresh-track"><span class="refresh-fill" id="refreshFill"></span></span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="metrics">
+      <div class="metric income reveal d1">
+        <div class="m-label">周期收入</div>
+        <div class="m-value" id="mIncome">¥0</div>
+        <div class="m-acc"></div>
+      </div>
+      <div class="metric pieces reveal d2">
+        <div class="m-label">总件数</div>
+        <div class="m-value" id="mPieces">0</div>
+        <div class="m-acc"></div>
+      </div>
+      <div class="metric machines reveal d3">
+        <div class="m-label">在用机器</div>
+        <div class="m-value" id="mMachines">0</div>
+        <div class="m-acc"></div>
+      </div>
+      <div class="metric days reveal d4">
+        <div class="m-label">记录天数</div>
+        <div class="m-value" id="mDays">0</div>
+        <div class="m-acc"></div>
+      </div>
+    </section>
+
+    <section class="controls reveal d5">
+      <div class="seg" id="periodSeg">
+        <button data-p="week">本周</button>
+        <button data-p="month" class="on">本月</button>
+        <button data-p="all">全部</button>
+      </div>
+      <div class="seg" id="trendSeg">
+        <button data-m="line" class="on">趋势线</button>
+        <button data-m="bar">产量柱</button>
+      </div>
+    </section>
+
+    <section class="charts">
+      <div class="card reveal d6">
+        <div class="eyebrow">Production Trend</div>
+        <div class="card-title">
+          <span>产量趋势</span>
+          <span style="font-family:var(--mono);font-size:11px;color:var(--faint)" id="trendRange">—</span>
+        </div>
+        <canvas id="trend"></canvas>
+      </div>
+      <div class="card reveal d6">
+        <div class="eyebrow">Machine Distribution</div>
+        <div class="card-title"><span>机器产量分布</span><span style="font-family:var(--mono);font-size:11px;color:var(--faint)" id="distTotal">—</span></div>
+        <div class="dist-list" id="distList"></div>
+      </div>
+    </section>
+
+    <section class="card reveal" style="animation-delay:.46s">
+      <div class="eyebrow">Daily Records</div>
+      <div class="card-title"><span>每日记录</span><span style="font-family:var(--mono);font-size:11px;color:var(--faint)" id="recCount">—</span></div>
+      <div class="filters">
+        <label class="search">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          <input id="q" type="text" placeholder="搜索机器名称 / 日期…">
+        </label>
+        <span class="date-range">
+          从 <input id="dStart" type="date"> 至 <input id="dEnd" type="date">
+        </span>
+      </div>
+      <div class="table-scroll">
+      <table class="table">
+        <thead>
+          <tr><th>日期</th><th>件数</th><th>机器</th><th style="text-align:right">收入</th></tr>
+        </thead>
+        <tbody id="recBody"></tbody>
+      </table>
+      </div>
+      <div id="recEmpty"></div>
+    </section>
+  </main>
+
+  <footer>
+    部署说明 · 将 index.html 与手机 App 备份放在同一 WebDAV 目录，App 每次备份后自动更新本看板
+    <br><span class="dot">—————</span> CountStat Web Console <span class="dot">—————</span>
+  </footer>
+</div>
+
+<script>
+"use strict";
+var STATE = {
+  data: null,
+  latest: null,
+  period: "month",
+  trendMode: "line",
+  q: "",
+  dStart: "",
+  dEnd: ""
+};
+
+var REFRESH_SEC = 60;
+var REFRESH_START = Date.now();
+
+function $(id){ return document.getElementById(id); }
+function esc(s){
+  return String(s == null ? "" : s).replace(/[&<>"']/g, function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
+  });
+}
+function fmtMoney(v){
+  var neg = v < 0;
+  v = Math.abs(v);
+  var s = v.toFixed(3);
+  var parts = s.split(".");
+  parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return (neg ? "-" : "") + "¥" + parts.join(".");
+}
+function fmtInt(v){ return String(Math.round(v)).replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
+function fmtTime(ts){
+  if (!ts) return "—";
+  var d = new Date(ts);
+  function p(n){ return (n < 10 ? "0" : "") + n; }
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+}
+
+function todayStr(){
+  var d = new Date();
+  function p(n){ return (n < 10 ? "0" : "") + n; }
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+}
+function monthStartStr(){
+  var d = new Date();
+  function p(n){ return (n < 10 ? "0" : "") + n; }
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-01";
+}
+function weekStartStr(){
+  var d = new Date();
+  var day = d.getDay() || 7;
+  d.setDate(d.getDate() - day + 1);
+  function p(n){ return (n < 10 ? "0" : "") + n; }
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+}
+
+function periodRecords(){
+  if (!STATE.data || !STATE.data.records) return [];
+  var start = "", end = "";
+  if (STATE.period === "week") { start = weekStartStr(); end = todayStr(); }
+  if (STATE.period === "month") { start = monthStartStr(); end = todayStr(); }
+  var q = STATE.q.trim().toLowerCase();
+  return STATE.data.records.filter(function(r){
+    if (STATE.dStart && r.date < STATE.dStart) return false;
+    if (STATE.dEnd && r.date > STATE.dEnd) return false;
+    if (start && r.date < start) return false;
+    if (end && r.date > end) return false;
+    if (q) {
+      var hit = r.date.indexOf(q) >= 0;
+      if (!hit) {
+        for (var i = 0; i < r.machines.length; i++) {
+          if (String(r.machines[i].name).toLowerCase().indexOf(q) >= 0) { hit = true; break; }
+        }
+      }
+      if (!hit) return false;
+    }
+    return true;
+  }).sort(function(a, b){ return b.date < a.date ? -1 : 1; });
+}
+
+function recTotals(r){
+  var pieces = 0, income = 0, names = {};
+  (r.machines || []).forEach(function(m){
+    var q = Number(m.qty) || 0;
+    var p = Number(m.price) || 0;
+    pieces += q;
+    income += q * p;
+    names[m.name] = (names[m.name] || 0) + q;
+  });
+  return {pieces: pieces, income: income, names: names, count: Object.keys(names).length};
+}
+
+function countUp(el, target, formatter){
+  var start = Date.now(), dur = 900, from = 0;
+  if (el._last !== undefined) from = el._last;
+  el._last = target;
+  function tick(){
+    var t = Math.min(1, (Date.now() - start) / dur);
+    var ease = 1 - Math.pow(1 - t, 3);
+    el.textContent = formatter(from + (target - from) * ease);
+    if (t < 1) requestAnimationFrame(tick);
+  }
+  tick();
+}
+
+function renderMetrics(records){
+  var pieces = 0, income = 0, machineSet = {}, days = 0;
+  var lastDate = "";
+  records.forEach(function(r){
+    var t = recTotals(r);
+    pieces += t.pieces;
+    income += t.income;
+    Object.keys(t.names).forEach(function(n){ machineSet[n] = true; });
+    if (r.date !== lastDate) { days++; lastDate = r.date; }
+  });
+  countUp($("mIncome"), income, fmtMoney);
+  countUp($("mPieces"), pieces, fmtInt);
+  countUp($("mMachines"), Object.keys(machineSet).length, fmtInt);
+  countUp($("mDays"), days, fmtInt);
+}
+
+function renderDist(records){
+  var totals = {};
+  var max = 0;
+  records.forEach(function(r){
+    (r.machines || []).forEach(function(m){
+      var q = Number(m.qty) || 0;
+      totals[m.name] = (totals[m.name] || 0) + q;
+      if (totals[m.name] > max) max = totals[m.name];
+    });
+  });
+  var names = Object.keys(totals).sort(function(a, b){ return totals[b] - totals[a]; });
+  var sum = names.reduce(function(s, n){ return s + totals[n]; }, 0);
+  $("distTotal").textContent = names.length ? sum + " 件 · " + names.length + " 台" : "暂无数据";
+  var box = $("distList");
+  box.innerHTML = "";
+  if (!names.length) {
+    box.innerHTML = '<div class="empty"><div class="big">◌</div>当前周期暂无机器数据</div>';
+    return;
+  }
+  names.forEach(function(n, i){
+    var pct = max > 0 ? Math.round(totals[n] / max * 100) : 0;
+    var el = document.createElement("div");
+    el.className = "dist-item reveal";
+    el.style.animationDelay = (0.08 + i * 0.06) + "s";
+    el.innerHTML =
+      '<div class="d-top"><span class="d-name">' + esc(n) + '<em>占比 ' + pct + '%</em></span>' +
+      '<span class="d-num"><b>' + fmtInt(totals[n]) + '</b> 件</span></div>' +
+      '<div class="d-track r' + (i % 5) + '"><div class="d-fill" style="width:' + pct + '%"></div></div>';
+    box.appendChild(el);
+  });
+}
+
+function renderTrend(records){
+  var canvas = $("trend");
+  var ctx = canvas.getContext("2d");
+  var dpr = window.devicePixelRatio || 1;
+  var W = canvas.clientWidth, H = 260;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  ctx.scale(dpr, dpr);
+
+  var padL = 12, padR = 12, padT = 16, padB = 30;
+  var cw = W - padL - padR, ch = H - padT - padB;
+  ctx.clearRect(0, 0, W, H);
+
+  var list = records.slice().sort(function(a, b){ return a.date < b.date ? -1 : 1; });
+  var n = list.length;
+  var max = 1;
+  list.forEach(function(r){ max = Math.max(max, recTotals(r).pieces); });
+  max = Math.ceil(max / 10) * 10;
+
+  function x(i){ return n <= 1 ? padL + cw / 2 : padL + cw * i / (n - 1); }
+  function y(v){ return padT + ch * (1 - v / max); }
+
+  // 网格
+  ctx.strokeStyle = "rgba(30,44,74,.6)";
+  ctx.lineWidth = 1;
+  for (var g = 0; g <= 3; g++) {
+    var gy = padT + ch * g / 3;
+    ctx.beginPath();
+    ctx.moveTo(padL, gy);
+    ctx.lineTo(W - padR, gy);
+    ctx.stroke();
+  }
+
+  if (!n) {
+    ctx.fillStyle = "#5b6c8f";
+    ctx.font = "13px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("当前周期暂无趋势数据", W / 2, H / 2);
+    $("trendRange").textContent = "暂无数据";
+    return;
+  }
+  $("trendRange").textContent = list[0].date.substring(5) + " → " + list[n - 1].date.substring(5);
+
+  var pts = list.map(function(r, i){ return {x: x(i), y: y(recTotals(r).pieces)}; });
+
+  if (STATE.trendMode === "line") {
+    // 渐变面积
+    var grad = ctx.createLinearGradient(0, padT, 0, H - padB);
+    grad.addColorStop(0, "rgba(56,189,248,.28)");
+    grad.addColorStop(1, "rgba(56,189,248,0)");
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, H - padB);
+    pts.forEach(function(p){ ctx.lineTo(p.x, p.y); });
+    ctx.lineTo(pts[n - 1].x, H - padB);
+    ctx.closePath();
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // 折线（发光）
+    ctx.save();
+    ctx.shadowColor = "rgba(56,189,248,.65)";
+    ctx.shadowBlur = 12;
+    ctx.strokeStyle = "#38bdf8";
+    ctx.lineWidth = 2.5;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    pts.forEach(function(p, i){ i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); });
+    ctx.stroke();
+    ctx.restore();
+
+    // 数据点
+    pts.forEach(function(p, i){
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+      ctx.fillStyle = "#0f1a2e";
+      ctx.fill();
+      ctx.strokeStyle = "#38bdf8";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    });
+  } else {
+    var bw = Math.min(46, (cw / n) * 0.55);
+    pts.forEach(function(p, i){
+      var bh = (H - padB) - p.y;
+      var g = ctx.createLinearGradient(0, p.y, 0, H - padB);
+      g.addColorStop(0, "#3b82f6");
+      g.addColorStop(1, "#1d4ed8");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      var r = Math.min(5, bw / 2);
+      var bx = p.x - bw / 2;
+      ctx.moveTo(bx, H - padB);
+      ctx.lineTo(bx, p.y + r);
+      ctx.arcTo(bx, p.y, bx + r, p.y, r);
+      ctx.arcTo(bx + bw, p.y, bx + bw, p.y + r, r);
+      ctx.lineTo(bx + bw, H - padB);
+      ctx.closePath();
+      ctx.fill();
+    });
+  }
+
+  // X 轴日期
+  ctx.fillStyle = "#5b6c8f";
+  ctx.font = "10px monospace";
+  ctx.textAlign = "center";
+  var step = Math.max(1, Math.ceil(n / 8));
+  pts.forEach(function(p, i){
+    if (i % step !== 0 && i !== n - 1) return;
+    ctx.fillText(list[i].date.substring(5), p.x, H - 10);
+  });
+}
+
+function renderRecords(records){
+  var body = $("recBody");
+  var empty = $("recEmpty");
+  body.innerHTML = "";
+  $("recCount").textContent = records.length + " 条";
+  if (!records.length) {
+    empty.innerHTML = '<div class="empty"><div class="big">∅</div>没有匹配的记录<br>换个筛选条件试试</div>';
+    return;
+  }
+  empty.innerHTML = "";
+  records.slice(0, 60).forEach(function(r){
+    var t = recTotals(r);
+    var names = Object.keys(t.names);
+    var tr = document.createElement("tr");
+    var chips = names.slice(0, 4).map(function(nm){
+      return '<span class="chip"><b>' + esc(nm) + '</b> <i>×' + fmtInt(t.names[nm]) + '</i></span>';
+    }).join("");
+    var more = names.length > 4 ? '<span class="chip" style="color:var(--faint)">+' + (names.length - 4) + '</span>' : "";
+    tr.innerHTML =
+      '<td class="td-date">' + esc(r.date) + '<small>' + esc(fmtTime(r.updatedAt).split(" ")[1]) + ' 更新</small></td>' +
+      '<td class="td-pieces">' + fmtInt(t.pieces) + '</td>' +
+      '<td><div class="chips">' + chips + more + '</div></td>' +
+      '<td class="td-income">' + fmtMoney(t.income) + '<span class="arrow">▼</span></td>';
+    tr.addEventListener("click", function(){
+      var open = tr.classList.toggle("open");
+      var next = tr.nextSibling;
+      if (next && next.classList && next.classList.contains("detail-row")) {
+        body.removeChild(next);
+        return;
+      }
+      var dtr = document.createElement("tr");
+      dtr.className = "detail-row";
+      var cells = r.machines.map(function(m){
+        return '<div class="detail-cell"><div class="n">' + esc(m.name) + '</div>' +
+          '<div class="s"><span>件数 <b>' + fmtInt(m.qty) + '</b></span><span>单价 <i>' + fmtMoney(m.price).replace("¥", "¥") + '</i></span></div>' +
+          '<div class="s"><span>小计 <i style="color:var(--green)">' + fmtMoney((Number(m.qty) || 0) * (Number(m.price) || 0)) + '</i></span></div></div>';
+      }).join("");
+      dtr.innerHTML = '<td colspan="4"><div class="detail-grid">' + cells + '</div></td>';
+      if (tr.nextSibling) body.insertBefore(dtr, tr.nextSibling);
+      else body.appendChild(dtr);
+    });
+    body.appendChild(tr);
+  });
+}
+
+function renderAll(){
+  var records = periodRecords();
+  renderMetrics(records);
+  renderDist(records);
+  renderTrend(records);
+  renderRecords(records);
+}
+
+function loadData(){
+  return Promise.all([
+    fetch("countstat-export.json", {cache: "no-store"}).then(function(res){
+      if (!res.ok) throw new Error(res.status);
+      return res.json();
+    }),
+    fetch("countstat-latest.json", {cache: "no-store"}).then(function(res){
+      if (!res.ok) throw new Error(res.status);
+      return res.json();
+    }).catch(function(){ return null; })
+  ]);
+}
+
+function applyData(results){
+  var exportData = results[0];
+  var latest = results[1];
+  STATE.data = exportData;
+  STATE.latest = latest;
+  if (latest && latest.db) $("backupName").textContent = latest.db;
+  $("exportName").textContent = exportData.db || "countstat-export.json";
+  renderAll();
+}
+
+function showLoadError(){
+  var body = $("recBody");
+  body.innerHTML = "";
+  var empty = $("recEmpty");
+  empty.innerHTML =
+    '<div class="empty"><div class="big">⚠</div>' +
+    '<b>未找到 countstat-export.json</b><br>' +
+    '请把本页面与手机 App 的 WebDAV 备份放在同一个目录<br>' +
+    'App 备份时（手动备份或自动同步）会自动生成并上传：<br>' +
+    '<code>countstat-export.json</code>　<code>countstat-latest.json</code><br>' +
+    '然后在手机 App「备份」页点击「立即备份」即可在这里看到数据。</div>';
+  ["mIncome","mPieces","mMachines","mDays"].forEach(function(id){
+    $(id).textContent = "—";
+  });
+  $("backupName").textContent = "未连接";
+  $("distList").innerHTML = "";
+  $("trendRange").textContent = "—";
+  $("recCount").textContent = "0 条";
+}
+
+var loading = false;
+function refresh(){
+  if (loading) return;
+  loading = true;
+  loadData().then(function(results){
+    applyData(results);
+    REFRESH_START = Date.now();
+  }).catch(function(){
+    showLoadError();
+    REFRESH_START = Date.now();
+  }).then(function(){ loading = false; });
+}
+
+function tickRefresh(){
+  var elapsed = (Date.now() - REFRESH_START) / 1000;
+  var left = Math.max(0, REFRESH_SEC - elapsed);
+  $("refreshFill").style.width = (100 * (1 - left / REFRESH_SEC)) + "%";
+  $("refreshText").textContent = Math.ceil(left) + "s 后自动刷新";
+  if (left <= 0) refresh();
+}
+
+function bindControls(){
+  document.querySelectorAll("#periodSeg button").forEach(function(btn){
+    btn.addEventListener("click", function(){
+      document.querySelectorAll("#periodSeg button").forEach(function(b){ b.classList.remove("on"); });
+      btn.classList.add("on");
+      STATE.period = btn.dataset.p;
+      renderAll();
+    });
+  });
+  document.querySelectorAll("#trendSeg button").forEach(function(btn){
+    btn.addEventListener("click", function(){
+      document.querySelectorAll("#trendSeg button").forEach(function(b){ b.classList.remove("on"); });
+      btn.classList.add("on");
+      STATE.trendMode = btn.dataset.m;
+      renderTrend(periodRecords());
+    });
+  });
+  var qTimer = null;
+  $("q").addEventListener("input", function(){
+    clearTimeout(qTimer);
+    qTimer = setTimeout(function(){
+      STATE.q = $("q").value;
+      renderAll();
+    }, 200);
+  });
+  $("dStart").addEventListener("change", function(){ STATE.dStart = this.value; renderAll(); });
+  $("dEnd").addEventListener("change", function(){ STATE.dEnd = this.value; renderAll(); });
+  window.addEventListener("resize", function(){ renderTrend(periodRecords()); });
+}
+
+bindControls();
+$("dStart").value = "";
+$("dEnd").value = todayStr();
+refresh();
+setInterval(tickRefresh, 500);
+</script>
+</body>
+</html>
+

@@ -1,6 +1,7 @@
 package com.countstat.app;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.DatePickerDialog;
 import android.content.SharedPreferences;
 import android.graphics.Color;
@@ -47,7 +48,6 @@ public class MainActivity extends Activity {
     private static final String KEY_DAV_PATH = "dav_path";
     private static final String KEY_AUTO_SYNC = "auto_sync";
     private static final String KEY_SYNC_DELAY_MIN = "sync_delay_min";
-    private static final String KEY_SEEDED = "seeded_v2";
     private static final String KEY_MACHINES_CONFIG = "machines_config";
 
     private final int bg = Color.rgb(8, 13, 24);
@@ -91,7 +91,6 @@ public class MainActivity extends Activity {
     private LinearLayout configListContainer;
 
     private final DecimalFormat moneyFormat = new DecimalFormat("0.000");
-    private final DecimalFormat priceFormat = new DecimalFormat("0.000");
     private final SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA);
 
     /** 录入页一行机器输入。 */
@@ -123,7 +122,6 @@ public class MainActivity extends Activity {
         dbHelper = new DbHelper(this);
         syncManager = new AutoSyncManager(this, dbHelper);
         applySyncConfig();
-        clearDemoSeedRecordsIfNeeded();
 
         syncManager.setCallback(msg -> toast(msg));
 
@@ -169,6 +167,7 @@ public class MainActivity extends Activity {
         boolean auto = preferences.getBoolean(KEY_AUTO_SYNC, false);
         long delay = preferences.getLong(KEY_SYNC_DELAY_MIN, 3);
         syncManager.configure(url, user, pass, path, auto, delay);
+        syncManager.setMachinesJson(preferences.getString(KEY_MACHINES_CONFIG, ""));
     }
 
     private void buildTabs() {
@@ -260,7 +259,7 @@ public class MainActivity extends Activity {
             form.addView(empty("请先点击右上角“配置”添加机器名称和单价。"));
         } else {
             for (MachineConfig machine : configs) {
-                addMachineRow(machine.name, "", priceFormat.format(machine.unitPrice));
+                addMachineRow(machine.name, "", moneyFormat.format(machine.unitPrice));
             }
         }
 
@@ -274,8 +273,9 @@ public class MainActivity extends Activity {
         form.addView(actions);
         body.addView(form);
 
-        body.addView(sectionTitle("最近记录", loadRecords().size() + " 条"));
-        body.addView(recordList(loadRecent(3), false));
+        List<Record> records = sortedRecords();
+        body.addView(sectionTitle("最近记录", records.size() + " 条"));
+        body.addView(recordList(records.subList(0, Math.min(3, records.size())), false));
 
         updatePreview();
     }
@@ -359,11 +359,11 @@ public class MainActivity extends Activity {
         machineListContainer.removeAllViews();
         if (record.machines.isEmpty()) {
             for (MachineConfig machine : loadMachineConfigs()) {
-                addMachineRow(machine.name, "", priceFormat.format(machine.unitPrice));
+                addMachineRow(machine.name, "", moneyFormat.format(machine.unitPrice));
             }
         } else {
             for (Record.Machine m : record.machines) {
-                addMachineRow(m.name, String.valueOf(m.quantity), priceFormat.format(m.unitPrice));
+                addMachineRow(m.name, String.valueOf(m.quantity), moneyFormat.format(m.unitPrice));
             }
         }
         updatePreview();
@@ -374,7 +374,7 @@ public class MainActivity extends Activity {
         machineRows.clear();
         machineListContainer.removeAllViews();
         for (MachineConfig machine : loadMachineConfigs()) {
-            addMachineRow(machine.name, "", priceFormat.format(machine.unitPrice));
+            addMachineRow(machine.name, "", moneyFormat.format(machine.unitPrice));
         }
         updatePreview();
         toast("已清空录入内容");
@@ -390,7 +390,7 @@ public class MainActivity extends Activity {
             m.name = name;
             m.quantity = Math.max(0, (int) Math.round(number(row.quantity.getText().toString())));
             m.unitPrice = number(row.price.getText().toString());
-            if (m.unitPrice <= 0) m.unitPrice = 0.35;
+            if (m.unitPrice <= 0) m.unitPrice = Record.Machine.DEFAULT_PRICE;
             record.machines.add(m);
         }
         return record;
@@ -612,7 +612,7 @@ public class MainActivity extends Activity {
 
         List<MachineConfig> configs = loadMachineConfigs();
         if (configs.isEmpty()) {
-            addConfigRow("M1", "0.35");
+            addConfigRow("M1", String.valueOf(Record.Machine.DEFAULT_PRICE));
         } else {
             for (MachineConfig machine : configs) {
                 addConfigRow(machine.name, moneyFormat.format(machine.unitPrice));
@@ -621,7 +621,7 @@ public class MainActivity extends Activity {
 
         LinearLayout actions = row();
         Button add = secondaryButton("+ 添加机器");
-        add.setOnClickListener(v -> addConfigRow("M" + (configRows.size() + 1), "0.35"));
+        add.setOnClickListener(v -> addConfigRow("M" + (configRows.size() + 1), String.valueOf(Record.Machine.DEFAULT_PRICE)));
         Button save = primaryButton("保存配置");
         save.setOnClickListener(v -> saveMachineConfig());
         actions.addView(add, weightParams());
@@ -770,7 +770,7 @@ public class MainActivity extends Activity {
             WebDavClient client = new WebDavClient(
                     preferences.getString(KEY_DAV_URL, ""),
                     preferences.getString(KEY_DAV_USER, ""),
-                    "",
+                    preferences.getString(KEY_DAV_PASS, ""),
                     preferences.getString(KEY_DAV_PATH, "/计件备份/"));
             List<String> files = client.listBackups();
             runOnUiThread(() -> {
@@ -801,37 +801,46 @@ public class MainActivity extends Activity {
             RadioButton rb = findViewById(id);
             if (rb == null) return;
             String name = rb.getText().toString();
-            toast("正在恢复 " + name);
-            new Thread(() -> {
-                WebDavClient client = new WebDavClient(
-                        preferences.getString(KEY_DAV_URL, ""),
-                        preferences.getString(KEY_DAV_USER, ""),
-                        "",
-                        preferences.getString(KEY_DAV_PATH, "/计件备份/"));
-                File tmp = new File(getCacheDir(), "restore_countstat.db");
-                if (client.download(name, tmp)) {
-                    dbHelper.close();
-                    File local = dbHelper.getDbFile();
-                    local.getParentFile().mkdirs();
-                    try (java.io.FileInputStream in = new java.io.FileInputStream(tmp);
-                         java.io.FileOutputStream out = new java.io.FileOutputStream(local)) {
-                        byte[] buf = new byte[8192];
-                        int n;
-                        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
-                    } catch (Exception ignored) {
-                    }
-                    dbHelper.getReadableDatabase();
-                    runOnUiThread(() -> {
-                        toast("已恢复 " + name);
-                        showPage("home");
-                    });
-                } else {
-                    runOnUiThread(() -> toast("恢复失败"));
-                }
-            }).start();
+            new AlertDialog.Builder(this)
+                    .setTitle("恢复备份")
+                    .setMessage("确定用 " + name + " 覆盖本地所有记录吗？此操作不可撤销。")
+                    .setPositiveButton("恢复", (d, w) -> doRestore(name))
+                    .setNegativeButton("取消", null)
+                    .show();
         });
         restore.addView(restoreBtn, fullParams(dp(48)));
         body.addView(restore);
+    }
+
+    private void doRestore(String name) {
+        toast("正在恢复 " + name);
+        new Thread(() -> {
+            WebDavClient client = new WebDavClient(
+                    preferences.getString(KEY_DAV_URL, ""),
+                    preferences.getString(KEY_DAV_USER, ""),
+                    preferences.getString(KEY_DAV_PASS, ""),
+                    preferences.getString(KEY_DAV_PATH, "/计件备份/"));
+            File tmp = new File(getCacheDir(), "restore_countstat.db");
+            if (client.download(name, tmp)) {
+                dbHelper.close();
+                File local = dbHelper.getDbFile();
+                local.getParentFile().mkdirs();
+                try (java.io.FileInputStream in = new java.io.FileInputStream(tmp);
+                     java.io.FileOutputStream out = new java.io.FileOutputStream(local)) {
+                    byte[] buf = new byte[8192];
+                    int n;
+                    while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                } catch (Exception ignored) {
+                }
+                dbHelper.getReadableDatabase();
+                runOnUiThread(() -> {
+                    toast("已恢复 " + name);
+                    showPage("home");
+                });
+            } else {
+                runOnUiThread(() -> toast("恢复失败"));
+            }
+        }).start();
     }
 
     // ================= 详情查看与修改 =================
@@ -855,7 +864,7 @@ public class MainActivity extends Activity {
         body.addView(top);
 
         // 日期（可改）
-        EditText dateField = input(editingRecord.date, 0x00000000);
+        EditText dateField = input(editingRecord.date, InputType.TYPE_CLASS_DATETIME);
         attachDatePicker(dateField);
         body.addView(field("日期", dateField));
 
@@ -882,7 +891,8 @@ public class MainActivity extends Activity {
             rowTop.addView(rowTotal);
             rowCard.addView(rowTop);
 
-            EditText qtyInput = input(String.valueOf(m.quantity), 0x00002002); // TYPE_CLASS_NUMBER | TYPE_NUMBER_FLAG_DECIMAL
+            EditText qtyInput = input(String.valueOf(m.quantity),
+                    InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
             qtyInput.addTextChangedListener(new android.text.TextWatcher() {
                 @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
                 @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
@@ -920,7 +930,7 @@ public class MainActivity extends Activity {
             }
             List<Record.Machine> machines = new ArrayList<>();
             for (DetailRow dr : detailRows) {
-                int q = (int) number(dr.qty.getText().toString());
+                int q = (int) Math.round(number(dr.qty.getText().toString()));
                 if (q > 0) {
                     Record.Machine m = new Record.Machine();
                     m.name = dr.name;
@@ -1003,10 +1013,17 @@ public class MainActivity extends Activity {
                 });
                 Button del = dangerButton("删除");
                 del.setOnClickListener(v -> {
-                    dbHelper.delete(record.date);
-                    toast("已删除 " + record.date);
-                    syncManager.scheduleUpload();
-                    showPage("history");
+                    new AlertDialog.Builder(this)
+                            .setTitle("删除记录")
+                            .setMessage("确定删除 " + record.date + " 的记录吗？此操作不可恢复。")
+                            .setPositiveButton("删除", (d, w) -> {
+                                dbHelper.delete(record.date);
+                                toast("已删除 " + record.date);
+                                syncManager.scheduleUpload();
+                                showPage("history");
+                            })
+                            .setNegativeButton("取消", null)
+                            .show();
                 });
                 rowActions.addView(edit, weightParams());
                 rowActions.addView(del, weightParams());
@@ -1017,36 +1034,10 @@ public class MainActivity extends Activity {
         return list;
     }
 
-    private List<Record> loadRecent(int count) {
-        List<Record> records = sortedRecords();
-        return records.subList(0, Math.min(count, records.size()));
-    }
-
     private List<Record> sortedRecords() {
         List<Record> records = dbHelper.getAllRecords();
         Collections.sort(records, (a, b) -> b.date.compareTo(a.date));
         return records;
-    }
-
-    private List<Record> loadRecords() {
-        return dbHelper.getAllRecords();
-    }
-
-    private void clearDemoSeedRecordsIfNeeded() {
-        if (!preferences.getBoolean(KEY_SEEDED, false)) return;
-        for (Record record : dbHelper.getAllRecords()) {
-            if (isDemoSeedRecord(record)) dbHelper.delete(record.date);
-        }
-        preferences.edit().putBoolean(KEY_SEEDED, false).apply();
-    }
-
-    private boolean isDemoSeedRecord(Record record) {
-        if ("2026-07-30".equals(record.date)) return record.total() == 147 && Math.abs(record.income() - 54.15) < 0.01;
-        if ("2026-07-29".equals(record.date)) return record.total() == 94 && Math.abs(record.income() - 35.50) < 0.01;
-        if ("2026-07-28".equals(record.date)) return record.total() == 80 && Math.abs(record.income() - 28.00) < 0.01;
-        if ("2026-07-27".equals(record.date)) return record.total() == 94 && Math.abs(record.income() - 35.40) < 0.01;
-        if ("2026-07-26".equals(record.date)) return record.total() == 35 && Math.abs(record.income() - 12.25) < 0.01;
-        return false;
     }
 
     private List<MachineConfig> loadMachineConfigs() {

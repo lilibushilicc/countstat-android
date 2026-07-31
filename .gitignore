@@ -6,3 +6,7 @@ gradle.properties
 .idea/
 *.iml
 captures/
+
+.playwright-mcp/
+countstat-web/countstat-export.json
+countstat-web/countstat-latest.json

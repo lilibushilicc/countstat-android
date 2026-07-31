@@ -34,8 +34,19 @@ app/src/main/java/com/countstat/app/
 ├── DbHelper.java            # SQLite 数据库
 ├── Record.java              # 记录/机器数据模型
 ├── WebDavClient.java        # WebDAV 上传/下载/列目录
-└── AutoSyncManager.java     # 自动同步调度
+└── AutoSyncManager.java     # 自动同步调度 + JSON 导出
+countstat-web/
+└── index.html               # WebDAV 端数据看板（零依赖单文件）
 ```
+
+## WebDAV 端看板
+
+`countstat-web/index.html` 是与备份放在同一目录的只读数据看板：
+
+- App 每次备份时自动上传 `countstat-export.json`（记录全量数据）和 `countstat-latest.json`（最新备份指针）
+- 把 `index.html` 上传到 WebDAV 备份目录，通过支持静态托管的 WebDAV 服务（或任意静态服务器）访问即可
+- 同目录原则：页面用相对路径读取 JSON，无跨域问题
+- 功能：周期（本周/本月/全部）切换、折线/柱状趋势图、机器产量分布、每日记录搜索/筛选/展开明细、60s 自动刷新
 
 ## 已实现功能
 

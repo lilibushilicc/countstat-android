@@ -49,7 +49,21 @@ public class DbHelper extends SQLiteOpenHelper {
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        // 原型阶段直接重建；真实场景应做迁移
+        // 升级重建前先备份旧库文件，避免直接丢数据
+        try {
+            java.io.File dbFile = context.getDatabasePath(DB_NAME);
+            if (dbFile.exists()) {
+                java.io.File backup = new java.io.File(dbFile.getParentFile(),
+                        DB_NAME + ".v" + oldVersion + ".bak");
+                try (java.io.FileInputStream in = new java.io.FileInputStream(dbFile);
+                     java.io.FileOutputStream out = new java.io.FileOutputStream(backup)) {
+                    byte[] buf = new byte[8192];
+                    int n;
+                    while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                }
+            }
+        } catch (Exception ignored) {
+        }
         db.execSQL("DROP TABLE IF EXISTS " + TABLE);
         onCreate(db);
     }
@@ -151,7 +165,7 @@ public class DbHelper extends SQLiteOpenHelper {
                 Record.Machine m = new Record.Machine();
                 m.name = obj.optString("name", "M" + (i + 1));
                 m.quantity = obj.optInt("qty", 0);
-                m.unitPrice = obj.optDouble("price", 0.35);
+                m.unitPrice = obj.optDouble("price", Record.Machine.DEFAULT_PRICE);
                 record.machines.add(m);
             }
         } catch (Exception ignored) {
