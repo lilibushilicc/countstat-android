@@ -1,5 +1,7 @@
 # CountStat 原生 Android App
 
+[![GitHub](https://img.shields.io/badge/GitHub-lilibushilicc%2Fcountstat--android-181717?logo=github&style=flat-square)](https://github.com/lilibushilicc/countstat-android)
+
 根据上传的 4 个设计页改写的原生 Android 工程，不使用 WebView。
 
 ## 技术栈
