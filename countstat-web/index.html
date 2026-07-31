@@ -667,13 +667,25 @@ function renderAll(){
   renderRecords(records);
 }
 
+function dataUrls(){
+  var p = new URLSearchParams(location.search);
+  var data = p.get("data");
+  if (data){
+    var i = data.lastIndexOf("/");
+    var dir = i >= 0 ? data.slice(0, i + 1) : "";
+    return { exportUrl: data, latestUrl: dir + "countstat-latest.json" };
+  }
+  return { exportUrl: "countstat-export.json", latestUrl: "countstat-latest.json" };
+}
+
 function loadData(){
+  var urls = dataUrls();
   return Promise.all([
-    fetch("countstat-export.json", {cache: "no-store"}).then(function(res){
+    fetch(urls.exportUrl, {cache: "no-store"}).then(function(res){
       if (!res.ok) throw new Error(res.status);
       return res.json();
     }),
-    fetch("countstat-latest.json", {cache: "no-store"}).then(function(res){
+    fetch(urls.latestUrl, {cache: "no-store"}).then(function(res){
       if (!res.ok) throw new Error(res.status);
       return res.json();
     }).catch(function(){ return null; })
@@ -694,13 +706,20 @@ function showLoadError(){
   var body = $("recBody");
   body.innerHTML = "";
   var empty = $("recEmpty");
+  var remote = dataUrls().exportUrl.indexOf("http") === 0;
   empty.innerHTML =
     '<div class="empty"><div class="big">⚠</div>' +
-    '<b>未找到 countstat-export.json</b><br>' +
-    '请把本页面与手机 App 的 WebDAV 备份放在同一个目录<br>' +
-    'App 备份时（手动备份或自动同步）会自动生成并上传：<br>' +
-    '<code>countstat-export.json</code>　<code>countstat-latest.json</code><br>' +
-    '然后在手机 App「备份」页点击「立即备份」即可在这里看到数据。</div>';
+    '<b>未找到 ' + (remote ? "远程数据文件" : "countstat-export.json") + '</b><br>' +
+    (remote ?
+      '请检查 <code>?data=</code> 地址是否正确，且 WebDAV 服务返回 CORS 头<br>' +
+      '<code>Access-Control-Allow-Origin</code>（同目录部署不受此限制）<br>' +
+      'App 备份时（手动备份或自动同步）会自动生成并上传：<br>' +
+      '<code>countstat-export.json</code>　<code>countstat-latest.json</code>' :
+      '请把本页面与手机 App 的 WebDAV 备份放在同一个目录<br>' +
+      'App 备份时（手动备份或自动同步）会自动生成并上传：<br>' +
+      '<code>countstat-export.json</code>　<code>countstat-latest.json</code><br>' +
+      '然后在手机 App「备份」页点击「立即备份」即可在这里看到数据。') +
+    '</div>';
   ["mIncome","mPieces","mMachines","mDays"].forEach(function(id){
     $(id).textContent = "—";
   });

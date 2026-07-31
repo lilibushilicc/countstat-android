@@ -41,12 +41,40 @@ countstat-web/
 
 ## WebDAV 端看板
 
-`countstat-web/index.html` 是与备份放在同一目录的只读数据看板：
+`countstat-web/index.html` 是零依赖单文件只读数据看板，App 每次备份时自动上传两个数据文件：
 
-- App 每次备份时自动上传 `countstat-export.json`（记录全量数据）和 `countstat-latest.json`（最新备份指针）
-- 把 `index.html` 上传到 WebDAV 备份目录，通过支持静态托管的 WebDAV 服务（或任意静态服务器）访问即可
-- 同目录原则：页面用相对路径读取 JSON，无跨域问题
-- 功能：周期（本周/本月/全部）切换、折线/柱状趋势图、机器产量分布、每日记录搜索/筛选/展开明细、60s 自动刷新
+- `countstat-export.json`：全量记录 + 机器配置 + 数据库时间戳
+- `countstat-latest.json`：最新备份文件名指针
+
+### 用法一：同目录部署（推荐，任何 WebDAV 都行）
+
+把 `index.html` 和两个 JSON 文件放到**同一个目录**（页面用相对路径读取，不涉及跨域）：
+
+1. 在手机 App「备份」页填写 WebDAV 账号并「立即备份」，自动生成两个 JSON
+2. 把 `index.html` 上传到 WebDAV 备份目录（或在 PC 上直接打开 `countstat-web/index.html` 本地文件）
+3. 通过支持静态托管/WebDAV 预览的站点访问该目录下的 `index.html` 即可
+
+无需任何 CORS 配置，坚果云等不支持跨域的网盘也适用。
+
+### 用法二：跨区部署（WebDAV 支持 CORS 时）
+
+如果 WebDAV 服务返回 `Access-Control-Allow-Origin` 头（例如自建 Nextcloud/nginx 配置），看板可部署在**任意位置**，通过 URL 参数指向远程数据：
+
+```
+https://你的看板地址/countstat-web/index.html?data=https://dav.example.com/remote.php/webdav/countstat/backup/countstat-export.json
+```
+
+- `data` 填远程 `countstat-export.json` 的完整地址，`countstat-latest.json` 会自动按同目录推导
+- 同目录部署时忽略该参数即可
+- 跨区部署时若 WebDAV 未配置 CORS，浏览器会拦截读取，页面会提示原因
+
+### 页面功能
+
+- 周期切换：本周 / 本月 / 全部
+- 趋势图：折线 / 柱状两种模式
+- 机器产量分布条
+- 每日记录：搜索、日期过滤、展开看各机器明细
+- 60 秒自动刷新（`?data=` 跨区模式同样生效）
 
 ## 已实现功能
 
