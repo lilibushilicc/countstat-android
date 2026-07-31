@@ -10,3 +10,5 @@ captures/
 .playwright-mcp/
 countstat-web/countstat-export.json
 countstat-web/countstat-latest.json
+
+countstat-release.jks
