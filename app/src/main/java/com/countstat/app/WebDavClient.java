@@ -6,19 +6,30 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.HttpURLConnection;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
+import java.security.cert.X509Certificate;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
 
 /**
- * WebDAV 客户端，基于 HttpURLConnection，无第三方依赖。
- * 支持上传(PUT)、下载(GET)、测试连接(PROPFIND)和列目录。
+ * WebDAV 客户端，基于原生 Socket 手写 HTTP/1.1，无第三方依赖。
+ * 不经过 HttpURLConnection，不受 Android 方法白名单限制，
+ * 支持 PROPFIND / MKCOL / PUT / GET。
  */
 public class WebDavClient {
 
@@ -29,6 +40,11 @@ public class WebDavClient {
     private String user;
     private String password;
     private String basePath;
+    private String lastError = "";
+
+    public String getLastError() {
+        return lastError;
+    }
 
     public WebDavClient(String url, String user, String password, String basePath) {
         setUrl(url);
@@ -57,62 +73,200 @@ public class WebDavClient {
         return !url.isEmpty();
     }
 
+    /** 对路径做百分号编码（保留 / 和 :）。 */
+    private String encodePath(String path) {
+        if (path == null || path.isEmpty()) return "";
+        return android.net.Uri.encode(path, "/:");
+    }
+
     /** 远程资源的完整 URL。 */
     private String remoteUrl(String remoteName) {
-        String base = url + basePath + "/";
+        String base = url + encodePath(basePath) + "/";
         return base + remoteName;
     }
 
-    private void applyAuth(HttpURLConnection conn) {
-        if (user.isEmpty() && password.isEmpty()) return;
-        String auth = user + ":" + password;
-        // java.util.Base64 需要 API 26+，而 minSdk 为 24，必须用 android.util.Base64
-        String encoded = android.util.Base64.encodeToString(auth.getBytes(StandardCharsets.UTF_8),
-                android.util.Base64.NO_WRAP);
-        conn.setRequestProperty("Authorization", "Basic " + encoded);
+    /** 一次 HTTP 响应。 */
+    private static class Response {
+        int code;
+        byte[] bytes = new byte[0];
+        Map<String, String> headers = new HashMap<>();
+
+        String body() {
+            return new String(bytes, StandardCharsets.UTF_8);
+        }
     }
 
-    private HttpURLConnection open(String fullUrl, String method) throws Exception {
-        HttpURLConnection conn = (HttpURLConnection) new URL(fullUrl).openConnection();
-        if (TRUST_ALL_TLS && conn instanceof HttpsURLConnection) {
-            // 允许自签名证书的简易信任；可通过 TRUST_ALL_TLS 关闭
-            HttpsURLConnection https = (HttpsURLConnection) conn;
-            try {
-                javax.net.ssl.SSLContext ctx = javax.net.ssl.SSLContext.getInstance("TLS");
-                ctx.init(null, new javax.net.ssl.TrustManager[]{trustAll()}, new java.security.SecureRandom());
-                https.setSSLSocketFactory(ctx.getSocketFactory());
-                https.setHostnameVerifier((hostname, session) -> true);
-            } catch (Exception ignored) {
+    /** 发送原始 HTTP 请求（每请求一个连接，Connection: close）。 */
+    private Response request(String fullUrl, String method, String depth,
+                             byte[] body, String contentType) throws Exception {
+        URL u = new URL(fullUrl);
+        boolean https = "https".equalsIgnoreCase(u.getProtocol());
+        int defaultPort = https ? 443 : 80;
+        int port = u.getPort() > 0 ? u.getPort() : defaultPort;
+        String host = u.getHost();
+        String path = u.getPath();
+        if (u.getQuery() != null) path += "?" + u.getQuery();
+        if (path.isEmpty()) path = "/";
+
+        Socket socket = null;
+        try {
+            if (https) {
+                SSLContext ctx = SSLContext.getInstance("TLS");
+                ctx.init(null, new TrustManager[]{trustAll()}, new SecureRandom());
+                SSLSocketFactory factory = ctx.getSocketFactory();
+                SSLSocket ssl = (SSLSocket) factory.createSocket();
+                ssl.connect(new InetSocketAddress(host, port), 15000);
+                ssl.setSoTimeout(30000);
+                ssl.startHandshake();
+                socket = ssl;
+            } else {
+                socket = new Socket();
+                socket.connect(new InetSocketAddress(host, port), 15000);
+                socket.setSoTimeout(30000);
+            }
+
+            StringBuilder head = new StringBuilder();
+            head.append(method).append(" ").append(path).append(" HTTP/1.1\r\n");
+            head.append("Host: ").append(host);
+            if (port != defaultPort) head.append(":").append(port);
+            head.append("\r\n");
+            if (!user.isEmpty() && !password.isEmpty()) {
+                String auth = user + ":" + password;
+                String encoded = android.util.Base64.encodeToString(auth.getBytes(StandardCharsets.UTF_8),
+                        android.util.Base64.NO_WRAP);
+                head.append("Authorization: Basic ").append(encoded).append("\r\n");
+            }
+            if (depth != null) head.append("Depth: ").append(depth).append("\r\n");
+            if (contentType != null) head.append("Content-Type: ").append(contentType).append("\r\n");
+            head.append("User-Agent: CountStat/1.0\r\n");
+            head.append("Connection: close\r\n");
+            head.append("Content-Length: ").append(body == null ? 0 : body.length).append("\r\n");
+            head.append("\r\n");
+            OutputStream out = socket.getOutputStream();
+            out.write(head.toString().getBytes(StandardCharsets.ISO_8859_1));
+            if (body != null) out.write(body);
+            out.flush();
+
+            return parse(socket.getInputStream());
+        } finally {
+            if (socket != null) socket.close();
+        }
+    }
+
+    private Response parse(InputStream in) throws Exception {
+        Response r = new Response();
+        String statusLine = readLine(in);
+        if (statusLine == null) throw new Exception("服务器无响应");
+        String[] parts = statusLine.split(" ", 3);
+        if (parts.length < 2) throw new Exception("响应状态行异常: " + statusLine);
+        try {
+            r.code = Integer.parseInt(parts[1]);
+        } catch (NumberFormatException e) {
+            throw new Exception("响应状态行异常: " + statusLine);
+        }
+        String line;
+        while ((line = readLine(in)) != null && !line.isEmpty()) {
+            int idx = line.indexOf(':');
+            if (idx > 0) {
+                r.headers.put(line.substring(0, idx).trim().toLowerCase(Locale.ROOT),
+                        line.substring(idx + 1).trim());
             }
         }
-        conn.setRequestMethod(method);
-        conn.setConnectTimeout(15000);
-        conn.setReadTimeout(30000);
-        applyAuth(conn);
-        return conn;
+        if (r.code == 204 || r.code == 304) return r;
+        String te = r.headers.get("transfer-encoding");
+        if (te != null && te.toLowerCase(Locale.ROOT).contains("chunked")) {
+            r.bytes = readChunked(in);
+        } else {
+            String cl = r.headers.get("content-length");
+            if (cl != null) {
+                r.bytes = readN(in, Integer.parseInt(cl.trim()));
+            } else {
+                r.bytes = readN(in, -1);
+            }
+        }
+        return r;
     }
 
-    private javax.net.ssl.TrustManager trustAll() {
-        return new javax.net.ssl.X509TrustManager() {
-            @Override public void checkClientTrusted(java.security.cert.X509Certificate[] chain, String authType) {}
-            @Override public void checkServerTrusted(java.security.cert.X509Certificate[] chain, String authType) {}
-            @Override public java.security.cert.X509Certificate[] getAcceptedIssuers() { return new java.security.cert.X509Certificate[0]; }
+    private String readLine(InputStream in) throws Exception {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        int c;
+        while ((c = in.read()) != -1) {
+            if (c == '\n') break;
+            bos.write(c);
+        }
+        if (bos.size() == 0 && c == -1) return null;
+        String s = bos.toString(StandardCharsets.ISO_8859_1.name());
+        if (s.endsWith("\r")) s = s.substring(0, s.length() - 1);
+        return s;
+    }
+
+    private byte[] readChunked(InputStream in) throws Exception {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        while (true) {
+            String sizeLine = readLine(in);
+            if (sizeLine == null) break;
+            int semi = sizeLine.indexOf(';');
+            if (semi >= 0) sizeLine = sizeLine.substring(0, semi);
+            int size;
+            try {
+                size = Integer.parseInt(sizeLine.trim(), 16);
+            } catch (NumberFormatException e) {
+                break;
+            }
+            if (size == 0) break;
+            bos.write(readN(in, size));
+            in.read();
+            in.read();
+        }
+        return bos.toByteArray();
+    }
+
+    private byte[] readN(InputStream in, int n) throws Exception {
+        ByteArrayOutputStream bos = new ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int total = 0;
+        int len;
+        while ((len = in.read(buf)) != -1) {
+            bos.write(buf, 0, len);
+            total += len;
+            if (n >= 0 && total >= n) break;
+        }
+        return bos.toByteArray();
+    }
+
+    private X509TrustManager trustAll() {
+        return new X509TrustManager() {
+            @Override public void checkClientTrusted(X509Certificate[] chain, String authType) {}
+            @Override public void checkServerTrusted(X509Certificate[] chain, String authType) {}
+            @Override public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
         };
     }
 
-    /** 测试连接：尝试 PROPFIND 根目录。 */
+    /** 测试连接：先 PROPFIND 根目录验证凭据，若备份目录不存在则创建后重测。 */
     public boolean testConnection() {
-        if (!isConfigured()) return false;
-        HttpURLConnection conn = null;
-        try {
-            conn = open(url + basePath + "/", "PROPFIND");
-            conn.setRequestProperty("Depth", "0");
-            int code = conn.getResponseCode();
-            return code >= 200 && code < 400;
-        } catch (Exception e) {
+        lastError = "";
+        if (!isConfigured()) {
+            lastError = "地址为空";
             return false;
-        } finally {
-            if (conn != null) conn.disconnect();
+        }
+        try {
+            Response r = request(url + "/", "PROPFIND", "0", null, null);
+            if (r.code < 200 || r.code >= 400) {
+                lastError = "根目录 HTTP " + r.code + (r.code == 401 ? "（账号或密码错误）" : "");
+                return false;
+            }
+            String target = url + encodePath(basePath) + "/";
+            r = request(target, "PROPFIND", "0", null, null);
+            if (r.code == 404) {
+                ensureDir();
+                r = request(target, "PROPFIND", "0", null, null);
+            }
+            if (r.code >= 200 && r.code < 400) return true;
+            lastError = "备份目录 HTTP " + r.code;
+            return false;
+        } catch (Exception e) {
+            lastError = e.getClass().getSimpleName() + ": " + e.getMessage();
+            return false;
         }
     }
 
@@ -123,13 +277,9 @@ public class WebDavClient {
         StringBuilder cur = new StringBuilder();
         for (String part : parts) {
             cur.append("/").append(part);
-            HttpURLConnection conn = null;
             try {
-                conn = open(url + cur + "/", "MKCOL");
-                conn.getResponseCode();
+                request(url + encodePath(cur.toString()) + "/", "MKCOL", null, null, null);
             } catch (Exception ignored) {
-            } finally {
-                if (conn != null) conn.disconnect();
             }
         }
     }
@@ -138,44 +288,29 @@ public class WebDavClient {
     public String upload(File localFile, String remoteName) {
         if (!isConfigured()) return null;
         ensureDir();
-        HttpURLConnection conn = null;
-        try (FileInputStream in = new FileInputStream(localFile)) {
-            conn = open(remoteUrl(remoteName), "PUT");
-            conn.setDoOutput(true);
-            conn.setRequestProperty("Content-Type", "application/octet-stream");
-            try (OutputStream out = conn.getOutputStream()) {
-                byte[] buf = new byte[8192];
-                int n;
-                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
-            }
-            int code = conn.getResponseCode();
-            return (code >= 200 && code < 300) ? remoteName : null;
+        try {
+            byte[] data = readFile(localFile);
+            Response r = request(remoteUrl(remoteName), "PUT", null, data, "application/octet-stream");
+            return (r.code >= 200 && r.code < 300) ? remoteName : null;
         } catch (Exception e) {
+            lastError = e.getClass().getSimpleName() + ": " + e.getMessage();
             return null;
-        } finally {
-            if (conn != null) conn.disconnect();
         }
     }
 
     /** 下载远程文件到本地。成功返回 true。 */
     public boolean download(String remoteName, File localDest) {
         if (!isConfigured()) return false;
-        HttpURLConnection conn = null;
         try {
-            conn = open(remoteUrl(remoteName), "GET");
-            int code = conn.getResponseCode();
-            if (code < 200 || code >= 300) return false;
-            try (InputStream in = conn.getInputStream();
-                 FileOutputStream out = new FileOutputStream(localDest)) {
-                byte[] buf = new byte[8192];
-                int n;
-                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            Response r = request(remoteUrl(remoteName), "GET", null, null, null);
+            if (r.code < 200 || r.code >= 300) return false;
+            try (FileOutputStream out = new FileOutputStream(localDest)) {
+                out.write(r.bytes);
             }
             return true;
         } catch (Exception e) {
+            lastError = e.getClass().getSimpleName() + ": " + e.getMessage();
             return false;
-        } finally {
-            if (conn != null) conn.disconnect();
         }
     }
 
@@ -183,20 +318,13 @@ public class WebDavClient {
     public boolean uploadText(String content, String remoteName) {
         if (!isConfigured()) return false;
         ensureDir();
-        HttpURLConnection conn = null;
         try {
-            conn = open(remoteUrl(remoteName), "PUT");
-            conn.setDoOutput(true);
-            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-            try (OutputStream out = conn.getOutputStream()) {
-                out.write(content.getBytes(StandardCharsets.UTF_8));
-            }
-            int code = conn.getResponseCode();
-            return code >= 200 && code < 300;
+            Response r = request(remoteUrl(remoteName), "PUT", null,
+                    content.getBytes(StandardCharsets.UTF_8), "application/json; charset=utf-8");
+            return r.code >= 200 && r.code < 300;
         } catch (Exception e) {
+            lastError = e.getClass().getSimpleName() + ": " + e.getMessage();
             return false;
-        } finally {
-            if (conn != null) conn.disconnect();
         }
     }
 
@@ -204,13 +332,10 @@ public class WebDavClient {
     public List<String> listBackups() {
         List<String> result = new ArrayList<>();
         if (!isConfigured()) return result;
-        HttpURLConnection conn = null;
         try {
-            conn = open(url + basePath + "/", "PROPFIND");
-            conn.setRequestProperty("Depth", "1");
-            int code = conn.getResponseCode();
-            if (code < 200 || code >= 400) return result;
-            String body = readAll(conn.getInputStream());
+            Response r = request(url + encodePath(basePath) + "/", "PROPFIND", "1", null, null);
+            if (r.code < 200 || r.code >= 400) return result;
+            String body = r.body();
             Pattern p = Pattern.compile("<D?:?href>([^<]*\\.db)</D?:?href>", Pattern.CASE_INSENSITIVE);
             Matcher m = p.matcher(body);
             while (m.find()) {
@@ -224,18 +349,18 @@ public class WebDavClient {
                 if (name.endsWith(".db")) result.add(name);
             }
         } catch (Exception ignored) {
-        } finally {
-            if (conn != null) conn.disconnect();
         }
         return result;
     }
 
-    private String readAll(InputStream in) throws Exception {
+    private byte[] readFile(File f) throws Exception {
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        byte[] buf = new byte[8192];
-        int n;
-        while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
-        return bos.toString(StandardCharsets.UTF_8.name());
+        try (InputStream in = new FileInputStream(f)) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
+        }
+        return bos.toByteArray();
     }
 
     /** 生成带时间戳的备份文件名。 */

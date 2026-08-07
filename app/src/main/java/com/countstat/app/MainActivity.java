@@ -729,7 +729,7 @@ public class MainActivity extends Activity {
                         davUser.getText().toString(), davPass.getText().toString(),
                         davPath.getText().toString());
                 boolean ok = client.testConnection();
-                runOnUiThread(() -> toast(ok ? "连接测试通过" : "连接失败，请检查配置"));
+                runOnUiThread(() -> toast(ok ? "连接测试通过" : "连接失败：" + client.getLastError()));
             }).start();
         });
         Button save = primaryButton("保存配置");
